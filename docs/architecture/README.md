@@ -20,8 +20,8 @@
 
 | 协议 | 在 taifeng 稳定层 |
 | --- | --- |
-| `MessageStore`、`MessageWriter`、`ThreadDirectory`、`IndexHook`、`MemoryStore` | 是（PyPI 2026.9.28.16 已含） |
+| `MessageStore`、`MessageWriter`、`ThreadDirectory`、`IndexHook`、`MemoryStore` | 是 |
 | `JsonlSessionJournalCore` | 否，在实验层 |
 | `WriterLockAdapter`、`ConversationProjectionStore`、`AtomicBatchMessageStore` | 否，未公开 |
 
-另：taifeng 目前没有 `py.typed` 标记，本仓代码一旦 import taifeng，mypy strict 会报 `import-untyped`。需要 taifeng 补上标记后发版。
+taifeng 自 2026.9.30.1 起带 `py.typed`，本仓对 taifeng 协议的使用受 mypy strict 检查。
