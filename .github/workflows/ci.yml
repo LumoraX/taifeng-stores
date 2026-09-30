@@ -25,6 +25,32 @@ jobs:
       matrix:
         # 与 pyproject classifiers 声明的受支持版本一一对应
         python-version: ["3.12", "3.13"]
+    # 存储行为一律对真实后端验证（AGENTS.md）：Postgres 带 pgvector 扩展，外加 Redis
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --host 127.0.0.1 --username postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TAIFENG_STORES_TEST_PG_DSN: postgresql://postgres:test@127.0.0.1:5432/test
+      TAIFENG_STORES_TEST_REDIS_URL: redis://127.0.0.1:6379/0
     steps:
       - name: 检出代码
         uses: actions/checkout@v7
