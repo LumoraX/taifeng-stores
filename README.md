@@ -55,6 +55,34 @@ engines = await taifeng.EnginePool.create(
 
 `embedder` 是宿主提供的嵌入实现（一个 `async def embed(texts) -> list[list[float]]` 方法），本包不绑定任何嵌入服务。
 
+### 在代码里迁移
+
+宿主自己管理发布流程时，可以不用命令行，直接调迁移函数：
+
+```python
+from taifeng_stores.postgres import (
+    apply_migrations,
+    current_version,
+    ensure_schema_current,
+    latest_version,
+)
+
+# 迁到最新；整个过程在一个事务里并持有咨询锁，多个实例同时启动也只会执行一次
+await apply_migrations(pool, namespace, components=("core", "memory"), embedding_dimensions=1536)
+
+await current_version(pool, namespace, "core")   # 数据库里的版本，从未迁移过为 0
+latest_version("core")                           # 代码要求的版本
+await ensure_schema_current(pool, namespace, "core")   # 只读核对，落后则抛 SchemaOutOfDateError
+```
+
+### 异常
+
+| 异常 | 何时抛出 |
+| --- | --- |
+| `StoreConfigError`（`ValueError`） | 构造参数不合法：命名空间含非法字符、维度不是正整数、未知的迁移组件 |
+| `SchemaOutOfDateError`（`RuntimeError`） | 表结构落后于代码要求；带 `component`、`current`、`required`。先运行迁移 |
+| `MigrationError`（`RuntimeError`） | 迁移脚本执行失败，或已执行的迁移与脚本内容对不上 |
+
 ## 后端
 
 | extra | 后端 | 覆盖的协议 | 状态 |
