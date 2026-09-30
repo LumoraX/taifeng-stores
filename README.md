@@ -55,6 +55,20 @@ engines = await taifeng.EnginePool.create(
 
 `embedder` 是宿主提供的嵌入实现（一个 `async def embed(texts) -> list[list[float]]` 方法），本包不绑定任何嵌入服务。
 
+### Redis 线程目录
+
+线程数量不大、只想要一个多实例共享的线程目录时，可以不用 Postgres：
+
+```python
+from redis.asyncio import Redis
+from taifeng_stores.redis import RedisThreadDirectory
+
+client = Redis.from_url("redis://localhost:6379/0")      # 客户端由宿主创建和关闭
+directory = RedisThreadDirectory(client, prefix="app")   # 不需要迁移
+
+engines = await taifeng.EnginePool.create(..., thread_directory=directory)
+```
+
 ### 在代码里迁移
 
 宿主自己管理发布流程时，可以不用命令行，直接调迁移函数：
@@ -92,7 +106,15 @@ await ensure_schema_current(pool, namespace, "core")   # 只读核对，落后�
 | `redis` | Redis | `ThreadDirectory` | 可用 |
 | `s3` | S3 兼容对象存储 | 大体积内容外置 | 未开始 |
 
-会话日志（taifeng `SessionJournal`）后端要等 taifeng 先公开相关协议，见 [ADR 0002](docs/decisions/0002-journal-backend-waits-for-kernel.md)。设计与已知限制见 [docs/architecture/](docs/architecture/README.md)。
+会话日志（taifeng `SessionJournal`）后端要等 taifeng 先公开相关协议，见 [ADR 0002](docs/decisions/0002-journal-backend-waits-for-kernel.md)。
+
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [接口参考](docs/architecture/reference.md) | 命名空间规则、迁移命令的全部选项、每个后端的构造参数与行为、嵌入协议、异常 |
+| [架构总览](docs/architecture/README.md) | 两种接法、数据布局、契约测试、已知限制 |
+| [决策记录](docs/decisions/README.md) | 为什么这么定 |
 
 ## 开发
 
