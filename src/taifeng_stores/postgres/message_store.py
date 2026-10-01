@@ -19,9 +19,8 @@ import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from taifeng import ThreadMetadata
+from taifeng import ThreadInfo, ThreadMetadata
 
-from taifeng_stores._kernel_types import ThreadInfo
 from taifeng_stores.namespace import SqlNamespace
 from taifeng_stores.postgres.messages import PositionClock, insert_items, select_items
 from taifeng_stores.postgres.migrate import ensure_schema_current

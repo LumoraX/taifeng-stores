@@ -19,7 +19,7 @@ classifiers = [
 
 dependencies = [
     # 只依赖 taifeng 稳定层；具体存储后端的客户端一律走 optional extras（ADR 0001 决策 4）
-    "taifeng>=2026.9.30.1",
+    "taifeng>=2026.10.1.10",
 ]
 
 [project.optional-dependencies]
@@ -79,3 +79,7 @@ testpaths = ["tests"]
 python_version = "3.12"
 strict = true
 warn_unused_ignores = true
+
+# 内核 2026.10.1.10 发布到 PyPI 之前，开发期从同级目录取源码。发布后删掉这一段。
+[tool.uv.sources]
+taifeng = { path = "../taifeng", editable = true }

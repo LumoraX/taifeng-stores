@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from importlib.metadata import version
+from pathlib import Path
 
 import taifeng
 
 import taifeng_stores
-from taifeng_stores import _kernel_types
 
 
 def test_version_from_metadata_matches_distribution() -> None:
@@ -38,14 +38,7 @@ def test_stable_api_data_types_exported() -> None:
     assert required <= set(taifeng.__all__)
 
 
-def test_signature_types_pinned() -> None:
-    """经单点模块引入的签名类型（ADR 0003）：钉住其存在与字段。
-
-    taifeng 把 ``ThreadInfo`` 提到顶层后，这条断言会提醒把引入方式改掉。
-    """
-    assert set(_kernel_types.__all__) == {"ThreadInfo"}
-    fields = set(_kernel_types.ThreadInfo.model_fields)
-    assert {"thread_id", "cwd", "created_at", "last_activity_at", "entry_skill_id"} <= fields
-    assert "ThreadInfo" not in taifeng.__all__, (
-        "ThreadInfo 已进入 taifeng 稳定层：请改为从顶层 import，并删除 _kernel_types 里的条目"
-    )
+def test_signature_types_come_from_the_stable_layer() -> None:
+    """稳定协议签名里出现的类型都在内核稳定层：适配包不再经单点模块引入（ADR 0005）。"""
+    assert "ThreadInfo" in taifeng.__all__
+    assert not (Path(taifeng_stores.__file__).parent / "_kernel_types.py").exists()
