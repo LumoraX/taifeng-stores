@@ -1,7 +1,9 @@
 """把会话消息镜像到 Postgres 的 ``IndexHook`` 实现。
 
-``taifeng.EnginePool`` 的会话主存是节点本地的 JSONL。多实例部署时，其他节点、审计与查询
-服务需要一个可共享的消息视图；本类订阅线程生命周期事件，把元数据与消息同步写进 Postgres。
+用 ``storage_dir`` 建 ``taifeng.EnginePool`` 时，会话主存是节点本地的 JSONL。其他节点、审计与
+查询服务需要一个可共享的消息视图；本类订阅线程生命周期事件，把元数据与消息同步写进 Postgres。
+要让多实例共享会话本身，改用 ``PostgresMessageStore`` 当主存；同一命名空间不要两者都挂，
+它们写同一张表。
 
 这是**镜像**，不是主存：
 

@@ -1,4 +1,4 @@
-"""``PostgresMessageStore``：协议行为，以及交给内核引擎真跑一轮对话。"""
+"""``PostgresMessageStore``：协议行为，以及交给内核引擎、引擎池真跑对话。"""
 
 from __future__ import annotations
 
@@ -325,3 +325,75 @@ async def test_engine_runs_a_turn_on_postgres(
     ]
     second_prompt = str(client.requests[-1].model_dump())
     assert "第一轮的回答" in second_prompt
+
+
+def _sim_client(turns: list[taifeng.SimTurn], *, protocol: str) -> taifeng.SimClient:
+    """内核稳定层的模拟模型，显式声明走哪种协议（只有文本输入）。"""
+    return taifeng.SimClient(
+        turns=turns,
+        capabilities=taifeng.ModelCapabilities(
+            input_modalities=frozenset({"text"}), provider="sim", protocol=protocol
+        ),
+    )
+
+
+async def test_engine_pool_uses_it_as_the_main_store(
+    pg_pool: asyncpg.Pool, namespace: SqlNamespace, tmp_path: Path
+) -> None:
+    """EnginePool 以它为主存：第一个池跑一轮后关闭；第二个池（另一个存储实例）续接同一线程。"""
+    skills = write_skills(tmp_path)
+
+    async def pool_with(
+        store: PostgresMessageStore, client: taifeng.SimClient
+    ) -> taifeng.EnginePool:
+        """以 ``store`` 为主存、它的目录为线程目录建池。"""
+        return await taifeng.EnginePool.create(
+            skills_dir=skills,
+            model_client=client,
+            message_store=store,
+            thread_directory=store.directory,
+            compressors=[],
+        )
+
+    first = await pool_with(
+        PostgresMessageStore(pg_pool, namespace=namespace),
+        _sim_client([taifeng.SimTurn(text="第一轮")], protocol="chat"),
+    )
+    engine = await first.get_or_create(session_id="s1", entry_skill_id="helper")
+    thread_id = engine.thread_id
+    assert (await run_turn(engine, "你好"))[-1].msg.kind == "turn_completed"
+    await first.close()
+
+    # 第二个池的模型请求里必须带着上一轮的问答：续接的历史真的进了提示
+    expect = taifeng.SimExpect(must_contain=("你好", "第一轮"))
+    second_client = _sim_client([taifeng.SimTurn(text="第二轮", expect=expect)], protocol="chat")
+    second_store = PostgresMessageStore(pg_pool, namespace=namespace)
+    second = await pool_with(second_store, second_client)
+    engine = await second.get_or_create(
+        session_id="s1", entry_skill_id="helper", resume_thread_id=thread_id
+    )
+    assert engine.thread_id == thread_id
+    assert (await run_turn(engine, "还在吗"))[-1].msg.kind == "turn_completed"
+    await second.close()
+    assert second_client.ledger.violations == []
+
+    texts = [item.payload.get("text") for item in await _load(second_store, thread_id)]
+    assert texts == ["你好", "第一轮", "还在吗", "第二轮"]
+    meta = await second_store.directory.get_metadata(thread_id)
+    assert meta is not None
+    assert (meta.entry_skill_id, meta.source) == ("helper", "session:s1")
+
+
+async def test_engine_pool_rejects_it_with_a_responses_client(
+    pg_pool: asyncpg.Pool, namespace: SqlNamespace, tmp_path: Path
+) -> None:
+    """只配 Chat：模型客户端走 Responses 协议时要原子批量写，本实现没有，建池即报错。"""
+    store = PostgresMessageStore(pg_pool, namespace=namespace)
+    with pytest.raises(taifeng.LLMError, match="AtomicBatchMessageStore"):
+        await taifeng.EnginePool.create(
+            skills_dir=write_skills(tmp_path),
+            model_client=_sim_client([taifeng.SimTurn(text="不会被采样")], protocol="responses"),
+            message_store=store,
+            thread_directory=store.directory,
+            compressors=[],
+        )

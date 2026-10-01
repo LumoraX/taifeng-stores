@@ -4,11 +4,13 @@
 
 适用范围（重要）：
 
-- 可以直接交给 ``taifeng.AgentEngine(store=...)``，配 Chat 协议的模型客户端；
-- **不能**配 Responses 协议的模型客户端：那需要原子批量写协议，taifeng 尚未公开（ADR 0002）；
-- ``taifeng.EnginePool.create`` 目前固定使用本机 JSONL 主存，不接受外部 ``MessageStore``。
-  经 ``EnginePool`` 承载会话的宿主，用 ``PostgresThreadDirectory`` 加 ``PostgresMessageMirror``
-  获得可共享的目录与消息视图。
+- 可交给 ``taifeng.EnginePool.create(message_store=store, thread_directory=store.directory)``
+  当会话主存（此时不给 ``storage_dir``）；也可以直接交给 ``taifeng.AgentEngine(store=...)``；
+- 同一命名空间不要再挂 ``PostgresMessageMirror``：两者写同一张表；
+- 只配 Chat 协议的模型客户端。Responses 协议要求 store 实现 ``AtomicBatchMessageStore``，
+  本实现没有，内核在建池时就会报错；
+- ``list_threads`` 返回的 ``item_count`` 恒为 0（不为它数消息）；
+- 同一线程同一时刻只能有一个写者：原持有方的写入全部结束后，接管方才能回放并写入。
 """
 
 from __future__ import annotations

@@ -1,6 +1,7 @@
 """测试辅助：脚本化的模型客户端与最小 skill 目录。
 
-只用 taifeng 稳定层的类型搭建。内核自带的模拟器不在稳定层，适配包不能依赖它。
+只用 taifeng 稳定层的类型搭建。``ScriptedModelClient`` 供直接构造 ``AgentEngine`` 的用例使用，
+它把每次请求记在 ``requests`` 里；经 ``EnginePool`` 的用例用稳定层的 ``taifeng.SimClient``。
 """
 
 from __future__ import annotations
