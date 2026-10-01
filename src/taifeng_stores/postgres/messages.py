@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from taifeng import ResponseItem
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Sequence
+    from collections.abc import Callable, Sequence
 
     import asyncpg
     from asyncpg.pool import PoolConnectionProxy
@@ -22,64 +22,34 @@ _INSERT_COLUMNS = "(position, thread_id, item_id, kind, payload, metadata, creat
 class PositionClock:
     """给每次写入调用发一个位置序号；回放按 ``(position, seq)`` 排序。
 
-    取值不小于「调用进入时刻的纳秒时间戳」，并且同一个时钟发出的序号严格递增。
+    取值不小于「调用进入时刻的纳秒时间戳」，并且大于本时钟的全局下限；每发一个序号，
+    下限就推到这个序号，所以同一个时钟发出的序号严格递增。
 
     - 同进程内靠「调用进入顺序」：必须在写入方法的第一个 ``await`` 之前同步调用。内核按
       消息顺序依次发起调用，但各次调用的数据库写入是并发完成的，只有进入顺序可靠。
-    - 跨节点接管时靠库里已有的最大位置续排：接管必先回放，回放时用 ``observe`` 记下该线程
-      已有的最大位置，之后对它的写入一定排在这之后，节点之间的时钟偏差不再打乱顺序。
-    - 镜像（``PostgresMessageMirror``）不经回放、不调 ``observe``，仍按墙钟排序。
-
-    下限按线程记，免得一个时钟偏快的节点写过的线程把本进程其余线程的位置一并抬高。
-    各线程的下限存在一个容量有限（``capacity``）、按插入顺序淘汰的字典里。淘汰不影响
-    正确性：被淘汰线程的下限并入全局下限，之后发出的任何位置都大于它；何况被淘汰的
-    线程再被接管时一定会先被回放，重新观察。
+    - 跨节点接管时靠回放续排：接管必先回放，回放看到的最大位置经 ``observe`` 抬高本进程的
+      全局下限，之后所有写入都排在它之后，节点之间的时钟偏差不再打乱顺序。效果类似
+      Lamport 时钟：position 只用于排序，不当时间用，被别的节点抬高无害。
+    - 镜像（``PostgresMessageMirror``）从不 ``observe``，行为与只按墙钟取值一致。
     """
 
-    def __init__(
-        self, now_ns: Callable[[], int] = time.time_ns, *, capacity: int = 100_000
-    ) -> None:
+    def __init__(self, now_ns: Callable[[], int] = time.time_ns) -> None:
         """
         Args:
             now_ns: 墙钟，返回纳秒时间戳；测试时可注入。从 0 起，首次取值即跳到当前时刻。
-            capacity: 最多记住多少个线程的下限，必须为正数。
         """
-        if capacity < 1:
-            raise ValueError(f"capacity must be positive; got {capacity}")
         self._now_ns = now_ns
-        self._capacity = capacity
-        # 本时钟发出过的最大位置，兼作全局下限（被淘汰线程的下限并入这里）
+        # 全局下限：本时钟发出过的、以及回放时观察到的最大位置
         self._last = 0
-        # 线程 id → 该线程已知的最大位置；按插入顺序排列，最早的在前
-        self._floors: dict[str, int] = {}
 
-    def observe(self, thread_id: str, position: int) -> None:
-        """记下某线程库里已有的最大位置：之后对它的写入一定排在这之后。"""
-        if position > self._floors.get(thread_id, -1):
-            self._remember(thread_id, position)
+    def observe(self, position: int) -> None:
+        """记下回放时看到的已有位置：之后发出的序号一定大于它；更小的值不会拉低下限。"""
+        self._last = max(self._last, position)
 
-    def next(self, thread_ids: Iterable[str] = ()) -> int:
-        """下一个位置序号：不小于墙钟，严格大于上一次取值与这些线程已有的最大位置。
-
-        取到的序号同时记为这些线程的新下限。镜像不带线程调用，行为与只按墙钟取值一致。
-        """
-        ids = tuple(thread_ids)
-        floor = max((self._floors.get(tid, -1) for tid in ids), default=-1)
-        position = max(self._now_ns(), self._last + 1, floor + 1)
-        self._last = position
-        for tid in ids:
-            self._remember(tid, position)
-        return position
-
-    def _remember(self, thread_id: str, position: int) -> None:
-        """把线程的下限设为 ``position`` 并标为最新；超出容量时淘汰最早的线程。"""
-        # 先删再插：已有的键也挪到最新
-        self._floors.pop(thread_id, None)
-        self._floors[thread_id] = position
-        while len(self._floors) > self._capacity:
-            oldest = next(iter(self._floors))
-            # 被淘汰的下限并入全局下限，之后取的位置都大于它
-            self._last = max(self._last, self._floors.pop(oldest))
+    def next(self) -> int:
+        """下一个位置序号：不小于墙钟，且严格大于全局下限。"""
+        self._last = max(self._now_ns(), self._last + 1)
+        return self._last
 
 
 def _dump(value: Any) -> str:
@@ -145,17 +115,10 @@ async def select_items_with_max_position(
     return [row_to_item(row) for row in rows], max_position
 
 
-async def select_items(conn: Connection, table: str, thread_id: str) -> list[ResponseItem]:
-    """按写入顺序取回一个线程的全部消息。"""
-    items, _ = await select_items_with_max_position(conn, table, thread_id)
-    return items
-
-
 __all__ = [
     "PositionClock",
     "insert_items",
     "item_to_row",
     "row_to_item",
-    "select_items",
     "select_items_with_max_position",
 ]

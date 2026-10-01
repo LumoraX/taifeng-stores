@@ -83,14 +83,16 @@ taifeng-stores-migrate --dsn postgresql://… --schema app --prefix tf_ \
 - 同一条消息重复写入会去重。
 - 回放顺序是 `(position, seq)`，与消息产生的顺序一致（内核并发触发写入时也成立）。
 
-### `PostgresMessageStore(pool, *, namespace=None)`
+### `PostgresMessageStore(pool, *, namespace=None, now_ns=None)`
 
 实现 taifeng 的 `MessageStore`：把 Postgres 当会话主存。
 
 - 只能配 Chat 协议的模型客户端（Responses 协议需要的原子批量写协议 taifeng 尚未公开）。
 - 目前 `EnginePool` 不接受外部 `MessageStore`，只有直接构造 `AgentEngine` 时用得上。
 - `store.directory` 是同一命名空间下的 `PostgresThreadDirectory`。
-- 多实例共享时，同一线程同一时刻只能有一个实例写入（由宿主保证，例如租约）。接管线程的实例先 `load_thread` 回放再追加：回放记下库里已有的最大位置，之后的写入排在已有消息之后，与各实例的时钟偏差无关。另有关键字参数 `now_ns`，只为测试注入时钟。
+- 多实例共享时，同一线程同一时刻只能有一个实例写入：原持有方的写入全部结束后，接管方才能回放并写入；租约过期不等于在途写入已落库——宿主要保证续期失败的一方立即停止写入。
+- 接管线程的实例先 `load_thread` 回放再追加：回放看到的最大位置会抬高本实例的位置下限，之后的写入都排在已有消息之后，与各实例的时钟偏差无关。
+- `now_ns` 是取位置序号用的墙钟（纳秒时间戳），只为测试注入时钟；`None` 用系统时钟。
 
 ### `PgvectorMemoryStore(pool, embedder, *, dimensions, …)`
 

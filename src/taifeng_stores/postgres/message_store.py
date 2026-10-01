@@ -62,9 +62,9 @@ def to_thread_info(meta: ThreadMetadata) -> ThreadInfo:
 class PostgresMessageStore:
     """会话消息存储，可多实例共享。
 
-    同一线程同一时刻只能有一个实例写入（由宿主保证，例如租约）。实例接管线程时先
-    ``load_thread`` 回放再追加：回放记下库里已有的最大位置，之后的写入排在它后面，
-    两个实例的时钟偏差不会打乱回放顺序。
+    同一线程同一时刻只能有一个实例写入，由宿主保证：原持有方的写入全部结束后，接管方
+    才能回放并写入。实例接管线程时先 ``load_thread`` 回放再追加：回放看到的最大位置抬高
+    本实例的全局下限，之后的写入都排在它后面，两个实例的时钟偏差不会打乱回放顺序。
     """
 
     def __init__(
@@ -130,10 +130,9 @@ class PostgresMessageStore:
         """批量追加：整批在一个事务里，要么全部可见，要么全部不可见。"""
         if not items:
             return
-        # 必须在第一个 await 之前取位置：并发追加按「调用进入顺序」回放；
-        # 带上涉及的线程，位置才会排在回放时观察到的已有消息之后
+        # 必须在第一个 await 之前取位置：并发追加按「调用进入顺序」回放
+        position = self._clock.next()
         thread_ids = sorted({item.thread_id for item in items})
-        position = self._clock.next(thread_ids)
         async with self._pool.acquire() as conn, conn.transaction():
             await insert_items(conn, self._messages, items, position=position)
             # 刷新活跃时间，列表才会把最近有消息的线程排在前面
@@ -146,14 +145,15 @@ class PostgresMessageStore:
     async def load_thread(self, thread_id: str) -> AsyncIterator[ResponseItem]:
         """按写入顺序回放线程的全部消息；线程不存在时得到空序列。
 
-        同时记下库里已有的最大位置：本实例之后对该线程的写入一定排在这些消息之后。
+        同时用库里已有的最大位置抬高本实例的全局下限：之后的写入一定排在这些消息之后。
         """
         async with self._pool.acquire() as conn:
             items, max_position = await select_items_with_max_position(
                 conn, self._messages, thread_id
             )
-        if max_position is not None:
-            self._clock.observe(thread_id, max_position)
+            # 在归还连接之前观察：归还要 await，不留让别的写入插进来的间隙
+            if max_position is not None:
+                self._clock.observe(max_position)
 
         async def _replay() -> AsyncIterator[ResponseItem]:
             for item in items:

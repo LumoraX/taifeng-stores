@@ -193,57 +193,28 @@ async def test_takeover_with_a_slower_clock_keeps_call_order(
 
 
 def test_position_clock_continues_after_observed_position() -> None:
-    """观察到某线程的已有位置后，对它取的位置严格大于该位置且严格递增；更小的观察值不降低下限。"""
+    """观察到已有位置后，取的位置严格大于它，并且继续严格递增。"""
     clock = PositionClock(lambda: 1)
-    clock.observe("thr_a", 1000)
-    clock.observe("thr_a", 5)
-    assert clock.next(["thr_a"]) == 1001
-    assert clock.next(["thr_a"]) == 1002
+    clock.observe(1000)
+    assert clock.next() == 1001
+    assert clock.next() == 1002
 
 
-def test_position_clock_floors_are_per_thread() -> None:
-    """一个线程观察到的下限不影响别的线程。"""
+def test_position_clock_smaller_observation_keeps_floor() -> None:
+    """更小的观察值不会把下限往回拉：既不低于观察过的，也不低于发出过的。"""
     clock = PositionClock(lambda: 1)
-    clock.observe("thr_a", 1000)
-    assert clock.next(["thr_b"]) == 1
-    assert clock.next() == 2
-    assert clock.next(["thr_a", "thr_b"]) == 1001
+    clock.observe(1000)
+    clock.observe(5)
+    assert clock.next() == 1001
+    clock.observe(10)
+    assert clock.next() == 1002
 
 
-def test_position_clock_evicts_the_oldest_thread() -> None:
-    """超出容量时淘汰最早的线程；被淘汰的下限并入全局下限，之后取的位置都大于它。"""
-    clock = PositionClock(lambda: 1, capacity=2)
-    clock.observe("thr_a", 1000)
-    clock.observe("thr_b", 10)
-    clock.observe("thr_c", 20)
-    # thr_a 最早，被淘汰：它的下限 1000 变成全局下限
-    assert clock.next(["thr_z"]) == 1001
-
-
-def test_position_clock_refreshes_updated_thread() -> None:
-    """更新已有线程的下限会让它变成最新，淘汰时轮到别的线程。"""
-    clock = PositionClock(lambda: 1, capacity=2)
-    clock.observe("thr_a", 1000)
-    clock.observe("thr_b", 10)
-    clock.observe("thr_a", 2000)
-    clock.observe("thr_c", 20)
-    # 被淘汰的是 thr_b：全局下限只到 10，没有被 thr_a 的 2000 抬高
-    assert clock.next(["thr_z"]) == 11
-    # 无论 thr_a 此后是否被挤出，对它的写入都排在 2000 之后
-    assert clock.next(["thr_a"]) == 2001
-
-
-def test_position_clock_without_threads_follows_wall_clock() -> None:
-    """不带线程取位置（镜像的用法）：不小于墙钟，且严格递增。"""
+def test_position_clock_without_observation_follows_wall_clock() -> None:
+    """从不观察（镜像的用法）：不小于墙钟，且严格递增。"""
     ticks = iter([100, 50, 300])
     clock = PositionClock(lambda: next(ticks))
     assert [clock.next(), clock.next(), clock.next()] == [100, 101, 300]
-
-
-def test_position_clock_rejects_bad_capacity() -> None:
-    """容量必须为正数。"""
-    with pytest.raises(ValueError, match="capacity"):
-        PositionClock(capacity=0)
 
 
 async def test_append_refreshes_activity_order(store: PostgresMessageStore) -> None:
