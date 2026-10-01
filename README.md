@@ -2,7 +2,7 @@
 
 [taifeng](https://github.com/LumoraX/taifeng) 的存储适配层：把 taifeng 定义的存储类协议接到 Postgres、Redis、对象存储与向量库。
 
-> **状态**：第一版。Postgres（线程目录、消息存储、消息镜像、向量记忆）与 Redis（线程目录）可用；对象存储未开始，会话日志后端等 taifeng 公开协议。
+> **状态**：第一版。Postgres（线程目录、消息存储、消息镜像、向量记忆）与 Redis（线程目录）可用，消息存储可当 `EnginePool` 的会话主存；对象存储未开始，会话日志后端等 taifeng 公开协议。
 
 ## 定位
 
@@ -23,37 +23,62 @@ taifeng-stores-migrate --dsn postgresql://... --schema app --prefix tf_ \
     --component core --component memory --embedding-dimensions 1536
 ```
 
-再把后端注入 taifeng：
+再把后端注入 taifeng。多实例共享会话时，把 Postgres 当会话主存：
 
 ```python
 import asyncpg
 import taifeng
 from taifeng_stores import SqlNamespace
-from taifeng_stores.postgres import (
-    PgvectorMemoryStore,
-    PostgresMessageMirror,
-    PostgresThreadDirectory,
-)
+from taifeng_stores.postgres import PgvectorMemoryStore, PostgresMessageStore
 
 pool = await asyncpg.create_pool(dsn)          # 连接池由宿主创建和关闭
 namespace = SqlNamespace(schema="app", prefix="tf_")
 
-directory = PostgresThreadDirectory(pool, namespace=namespace)
-await directory.check_schema()                 # 表结构落后时明确报错
+store = PostgresMessageStore(pool, namespace=namespace)
+await store.check_schema()                     # 表结构落后时明确报错
 
 engines = await taifeng.EnginePool.create(
     skills_dir="/data/skills",
-    storage_dir="/data/threads",               # 会话主存仍是本机 JSONL
-    model_client=model_client,
-    thread_directory=directory,                # 线程目录多实例共享
-    index_hook=PostgresMessageMirror(pool, namespace=namespace),   # 消息镜像进库
+    model_client=model_client,                 # 只能是 Chat 协议的客户端
+    message_store=store,                       # 会话主存进库；不给 storage_dir
+    thread_directory=store.directory,          # 同库、同命名空间的线程目录
     memory_store=PgvectorMemoryStore(          # 长期记忆
         pool, embedder, dimensions=1536, scope="team-a", namespace=namespace
     ),
 )
+
+# 任一实例都能从库里续接线程
+engine = await engines.get_or_create(
+    session_id="s1", entry_skill_id="helper", resume_thread_id=thread_id
+)
 ```
 
+- 同一线程同一时刻只能有一个实例写入，由宿主保证：原持有方的写入全部结束后，接管方才能回放并写入。
+- 模型客户端走 Responses 协议时，内核在建池时就报错：本实现没有原子批量写（[ADR 0005](docs/decisions/0005-main-store-for-engine-pool.md)）。
+- 池关闭时会调 `store.close()`，它不关连接池。
+
 `embedder` 是宿主提供的嵌入实现（一个 `async def embed(texts) -> list[list[float]]` 方法），本包不绑定任何嵌入服务。
+
+### 只把消息镜像进库
+
+会话主存留在本机 JSONL，只需要多实例共享的线程目录与消息视图时：
+
+```python
+from taifeng_stores.postgres import PostgresMessageMirror, PostgresThreadDirectory
+
+directory = PostgresThreadDirectory(pool, namespace=namespace)
+await directory.check_schema()
+
+engines = await taifeng.EnginePool.create(
+    skills_dir="/data/skills",
+    storage_dir="/data/threads",               # 会话主存是本机 JSONL
+    model_client=model_client,
+    thread_directory=directory,                # 线程目录多实例共享
+    index_hook=PostgresMessageMirror(pool, namespace=namespace),   # 消息镜像进库
+)
+```
+
+镜像写入失败不影响会话，与本机 JSONL 不一致时以后者为准。同一命名空间不要既把 `PostgresMessageStore` 当主存、又挂镜像：两者写同一张表。
 
 ### Redis 线程目录
 

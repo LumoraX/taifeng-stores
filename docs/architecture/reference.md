@@ -79,19 +79,31 @@ taifeng-stores-migrate --dsn postgresql://… --schema app --prefix tf_ \
 
 实现 taifeng 的 `IndexHook`：把会话消息镜像进 Postgres，供其他节点、审计与查询服务读取。
 
-- 这是镜像，不是主存。写入失败不影响会话；与会话主存不一致时以主存为准。
+- 这是镜像，不是主存。用 `storage_dir` 建 `EnginePool` 时挂上它；写入失败不影响会话；与会话主存不一致时以主存为准。
+- 同一命名空间不要与当主存的 `PostgresMessageStore` 同时挂：两者写同一张表。
 - 同一条消息重复写入会去重。
 - 回放顺序是 `(position, seq)`，与消息产生的顺序一致（内核并发触发写入时也成立）。
+- 位置只按本节点墙钟取值：会话被另一个节点接管时，节点之间的时钟偏差可能让接管点前后的少量消息错位。
 
 ### `PostgresMessageStore(pool, *, namespace=None, now_ns=None)`
 
 实现 taifeng 的 `MessageStore`：把 Postgres 当会话主存。
 
-- 只能配 Chat 协议的模型客户端（Responses 协议需要的原子批量写协议 taifeng 尚未公开）。
-- 目前 `EnginePool` 不接受外部 `MessageStore`，只有直接构造 `AgentEngine` 时用得上。
-- `store.directory` 是同一命名空间下的 `PostgresThreadDirectory`。
-- 多实例共享时，同一线程同一时刻只能有一个实例写入：原持有方的写入全部结束后，接管方才能回放并写入；租约过期不等于在途写入已落库——宿主要保证续期失败的一方立即停止写入。
-- 接管线程的实例先 `load_thread` 回放再追加：回放看到的最大位置会抬高本实例的位置下限，之后的写入都排在已有消息之后，与各实例的时钟偏差无关。
+```python
+store = PostgresMessageStore(pool, namespace=namespace)
+engines = await taifeng.EnginePool.create(
+    skills_dir=..., model_client=..., message_store=store, thread_directory=store.directory,
+)
+```
+
+- 可交给 `EnginePool.create(message_store=store, thread_directory=store.directory)` 当会话主存（此时不给 `storage_dir`）；也可以直接交给 `AgentEngine(store=...)`。
+- 同一命名空间不要再挂 `PostgresMessageMirror`：两者写同一张表。
+- 只配 Chat 协议的模型客户端。Responses 协议要求 store 实现 `AtomicBatchMessageStore`，本实现没有，内核在建池时就会报错（`UnsupportedPersistenceCapabilityError`，稳定层基类 `LLMError`）。
+- `list_threads` 返回的 `item_count` 恒为 0（不为它数消息）。
+- 同一线程同一时刻只能有一个写者：原持有方的写入全部结束后，接管方才能回放并写入。租约过期不等于在途写入已落库——宿主要保证续期失败的一方立即停止写入。
+- 接管线程的实例先 `load_thread` 回放再追加：回放看到的最大位置会抬高本实例位置时钟的全局下限，之后的写入都排在已有消息之后，与各实例的时钟偏差无关。
+- `store.directory` 是同一命名空间下的 `PostgresThreadDirectory`；`create_thread` 建线程时同时在里面登记元数据。
+- 池关闭时会调 `close()`；它不关连接池。
 - `now_ns` 是取位置序号用的墙钟（纳秒时间戳），只为测试注入时钟；`None` 用系统时钟。
 
 ### `PgvectorMemoryStore(pool, embedder, *, dimensions, …)`
