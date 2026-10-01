@@ -90,6 +90,7 @@ taifeng-stores-migrate --dsn postgresql://… --schema app --prefix tf_ \
 - 只能配 Chat 协议的模型客户端（Responses 协议需要的原子批量写协议 taifeng 尚未公开）。
 - 目前 `EnginePool` 不接受外部 `MessageStore`，只有直接构造 `AgentEngine` 时用得上。
 - `store.directory` 是同一命名空间下的 `PostgresThreadDirectory`。
+- 多实例共享时，同一线程同一时刻只能有一个实例写入（由宿主保证，例如租约）。接管线程的实例先 `load_thread` 回放再追加：回放记下库里已有的最大位置，之后的写入排在已有消息之后，与各实例的时钟偏差无关。另有关键字参数 `now_ns`，只为测试注入时钟。
 
 ### `PgvectorMemoryStore(pool, embedder, *, dimensions, …)`
 

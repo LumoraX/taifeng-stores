@@ -22,12 +22,16 @@ from typing import TYPE_CHECKING, Any
 from taifeng import ThreadInfo, ThreadMetadata
 
 from taifeng_stores.namespace import SqlNamespace
-from taifeng_stores.postgres.messages import PositionClock, insert_items, select_items
+from taifeng_stores.postgres.messages import (
+    PositionClock,
+    insert_items,
+    select_items_with_max_position,
+)
 from taifeng_stores.postgres.migrate import ensure_schema_current
 from taifeng_stores.postgres.thread_directory import PostgresThreadDirectory, row_to_metadata
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
 
     import asyncpg
     from taifeng import ResponseItem
@@ -56,20 +60,33 @@ def to_thread_info(meta: ThreadMetadata) -> ThreadInfo:
 
 
 class PostgresMessageStore:
-    """会话消息存储，可多实例共享。"""
+    """会话消息存储，可多实例共享。
 
-    def __init__(self, pool: asyncpg.Pool, *, namespace: SqlNamespace | None = None) -> None:
+    同一线程同一时刻只能有一个实例写入（由宿主保证，例如租约）。实例接管线程时先
+    ``load_thread`` 回放再追加：回放记下库里已有的最大位置，之后的写入排在它后面，
+    两个实例的时钟偏差不会打乱回放顺序。
+    """
+
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        namespace: SqlNamespace | None = None,
+        now_ns: Callable[[], int] | None = None,
+    ) -> None:
         """
         Args:
             pool: 宿主创建并管理的连接池。``close`` 不会关闭它。
             namespace: 表所在的 schema 与表名前缀；None 用默认值。
+            now_ns: 取位置序号用的墙钟（纳秒时间戳），只为测试注入时钟偏差；
+                None 用 ``time.time_ns``。
         """
         self._pool = pool
         self._namespace = namespace or SqlNamespace()
         self._messages = self._namespace.table("message")
         self._threads = self._namespace.table("thread")
         self._directory = PostgresThreadDirectory(pool, namespace=self._namespace)
-        self._clock = PositionClock()
+        self._clock = PositionClock(time.time_ns if now_ns is None else now_ns)
 
     @property
     def directory(self) -> PostgresThreadDirectory:
@@ -113,9 +130,10 @@ class PostgresMessageStore:
         """批量追加：整批在一个事务里，要么全部可见，要么全部不可见。"""
         if not items:
             return
-        # 必须在第一个 await 之前取位置：并发追加按「调用进入顺序」回放
-        position = self._clock.next()
+        # 必须在第一个 await 之前取位置：并发追加按「调用进入顺序」回放；
+        # 带上涉及的线程，位置才会排在回放时观察到的已有消息之后
         thread_ids = sorted({item.thread_id for item in items})
+        position = self._clock.next(thread_ids)
         async with self._pool.acquire() as conn, conn.transaction():
             await insert_items(conn, self._messages, items, position=position)
             # 刷新活跃时间，列表才会把最近有消息的线程排在前面
@@ -126,9 +144,16 @@ class PostgresMessageStore:
             )
 
     async def load_thread(self, thread_id: str) -> AsyncIterator[ResponseItem]:
-        """按写入顺序回放线程的全部消息；线程不存在时得到空序列。"""
+        """按写入顺序回放线程的全部消息；线程不存在时得到空序列。
+
+        同时记下库里已有的最大位置：本实例之后对该线程的写入一定排在这些消息之后。
+        """
         async with self._pool.acquire() as conn:
-            items = await select_items(conn, self._messages, thread_id)
+            items, max_position = await select_items_with_max_position(
+                conn, self._messages, thread_id
+            )
+        if max_position is not None:
+            self._clock.observe(thread_id, max_position)
 
         async def _replay() -> AsyncIterator[ResponseItem]:
             for item in items:
