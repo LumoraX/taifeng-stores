@@ -1,6 +1,6 @@
 # ADR 0003：稳定协议签名里的类型视为稳定契约，经单点模块引入
 
-- 状态：Accepted
+- 状态：Superseded by ADR 0005
 - 日期：2026-09-30
 - 关联：ADR 0001（决策 2）、ADR 0002；taifeng ADR 0066（公共 API 分层）
 

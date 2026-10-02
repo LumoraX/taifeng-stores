@@ -367,7 +367,9 @@ async def test_engine_pool_uses_it_as_the_main_store(
     # 第二个池的模型请求里必须带着上一轮的问答：续接的历史真的进了提示
     expect = taifeng.SimExpect(must_contain=("你好", "第一轮"))
     second_client = _sim_client([taifeng.SimTurn(text="第二轮", expect=expect)], protocol="chat")
-    second_store = PostgresMessageStore(pg_pool, namespace=namespace)
+    # 第二个存储的时钟停在 1970：续接后的写入排在已有消息之后，全靠内核 resume 时先在
+    # 这个注入的 store 上 load_thread 回放（taifeng ADR 0111），抬高了它的位置下限
+    second_store = PostgresMessageStore(pg_pool, namespace=namespace, now_ns=lambda: 1)
     second = await pool_with(second_store, second_client)
     engine = await second.get_or_create(
         session_id="s1", entry_skill_id="helper", resume_thread_id=thread_id

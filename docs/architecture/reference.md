@@ -102,6 +102,8 @@ engines = await taifeng.EnginePool.create(
 - `list_threads` 返回的 `item_count` 恒为 0（不为它数消息）。
 - 同一线程同一时刻只能有一个写者：原持有方的写入全部结束后，接管方才能回放并写入。租约过期不等于在途写入已落库——宿主要保证续期失败的一方立即停止写入。
 - 接管线程的实例先 `load_thread` 回放再追加：回放看到的最大位置会抬高本实例位置时钟的全局下限，之后的写入都排在已有消息之后，与各实例的时钟偏差无关。
+- 经 `EnginePool` 用 `resume_thread_id` 续接时，内核会先在注入的这个存储上 `load_thread`（taifeng ADR 0111）；直接构造 `AgentEngine` 时，回放必须走之后负责写入的那个存储实例。
+- `EnginePool.get_or_create` 命中缓存时会忽略 `resume_thread_id`、不重新回放：失去租约的一方必须 `release` 这个会话的引擎，否则以后再接手时用的是旧历史、位置下限也没有被抬高。
 - `store.directory` 是同一命名空间下的 `PostgresThreadDirectory`；`create_thread` 建线程时同时在里面登记元数据。
 - 池关闭时会调 `close()`；它不关连接池。
 - `now_ns` 是取位置序号用的墙钟（纳秒时间戳），只为测试注入时钟；`None` 用系统时钟。
